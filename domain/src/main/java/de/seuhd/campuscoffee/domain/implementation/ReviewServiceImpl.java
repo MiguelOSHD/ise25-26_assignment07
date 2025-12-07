@@ -1,7 +1,10 @@
 package de.seuhd.campuscoffee.domain.implementation;
 
 import de.seuhd.campuscoffee.domain.configuration.ApprovalConfiguration;
+import de.seuhd.campuscoffee.domain.exceptions.ValidationException;
+import de.seuhd.campuscoffee.domain.model.objects.Pos;
 import de.seuhd.campuscoffee.domain.model.objects.Review;
+import de.seuhd.campuscoffee.domain.model.objects.User;
 import de.seuhd.campuscoffee.domain.ports.api.ReviewService;
 import de.seuhd.campuscoffee.domain.ports.data.CrudDataService;
 import de.seuhd.campuscoffee.domain.ports.data.PosDataService;
@@ -46,8 +49,53 @@ public class ReviewServiceImpl extends CrudServiceImpl<Review, Long> implements 
     @Transactional
     public @NonNull Review upsert(@NonNull Review review) {
         // TODO: Implement the missing business logic here
+        User author = review.author();
+        Long authorId = author.getId();
+        if (author == null || authorId == null) {
+            throw new ValidationException("Review has to have a valid author.");
+        }
+        userDataService.getById(authorId);
 
-        return super.upsert(review);
+        Pos pos = review.pos();
+        Long posId = pos.getId();
+        if ( pos == null || posId == null) {
+            throw new ValidationException("Review has to reference a valid POS.");
+        }
+        Pos persistedPos = posDataService.getById(posId);
+        if(persistedPos == null){
+            throw new ValidationException("POS does not exist");
+        }
+        Long reviewId = review.getId();
+
+        List<Review> existing = reviewDataService.filter(persistedPos, author);
+        if (!existing.isEmpty()){
+            boolean conflict;
+            if (reviewId == null) {
+                conflict = true;
+            } else {
+                conflict = existing.stream()
+                        .anyMatch(r -> r.getId() == null || !r.getId().equals(reviewId));
+            }
+            if (conflict) {
+                throw new ValidationException("A user cannot review a POS more than once");
+            }
+        }
+        Integer count = review.approvalCount();
+        if(count == null){
+            throw new ValidationException("Count has to be valid.");
+        }
+        Review updated = review.toBuilder()
+                .approvalCount(count)
+                .build();
+
+        review = updateApprovalStatus(updated);
+
+        Review upserted = reviewDataService.upsert(review);
+        if(upserted == null){
+            throw new ValidationException("Upsert has to be valid");
+        }
+        return upserted;
+        // return super.upsert(review);
     }
 
     @Override
@@ -64,18 +112,40 @@ public class ReviewServiceImpl extends CrudServiceImpl<Review, Long> implements 
 
         // validate that the user exists
         // TODO: Implement the required business logic here
+        User user = userDataService.getById(userId);
+        if (user == null) {
+            throw new ValidationException("Benutzer existiert nicht.");
+        }
 
         // validate that the review exists
         // TODO: Implement the required business logic here
+        Long reviewId = review.getId();
+        if(reviewId == null){
+            throw new ValidationException("Review must exist");
+        }
+        Review existing = reviewDataService.getById(reviewId);
+        if (existing == null) {
+            throw new ValidationException("Review does not exist.");
+        }
 
         // a user cannot approve their own review
         // TODO: Implement the required business logic here
+        User author = existing.author();
+        Long authorId = author.getId();
+        if (authorId != null && authorId.equals(user.getId())) {
+            throw new ValidationException("User cannot approve own review.");
+        }
 
         // increment approval count
         // TODO: Implement the required business logic here
+        Integer currentCount = existing.approvalCount();
+        Review updated = existing.toBuilder()
+                .approvalCount(currentCount + 1)
+                .build();
 
         // update approval status to determine if the review now reaches the approval quorum
         // TODO: Implement the required business logic here
+        review = updateApprovalStatus(updated);
 
         return reviewDataService.upsert(review);
     }
